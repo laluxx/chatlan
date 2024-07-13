@@ -26,105 +26,112 @@ struct client_info {
 struct client_info clients[MAX_CLIENTS];
 bool server_running = 0;
 
+char *ip();
+void *receive_messages(void *arg);
+void send_message_to_client(int client_index, const char *message);
+int check_server_running(int port);
+void run_server(const char *ip_address, int port);
+void run_client(char *server_ip, int port);
+
 void *receive_messages(void *arg) {
-    struct client_info *client = (struct client_info *)arg;
-    int sock = client->sock;
-    struct sockaddr_in addr = client->address;
-    char buffer[BUFFER_SIZE];
-    int valread;
-    while (1) {
-        memset(buffer, 0, BUFFER_SIZE);
-        valread = read(sock, buffer, BUFFER_SIZE);
-        if (valread > 0) {
-            printf("%s", buffer);
-            char message[BUFFER_SIZE + NAME_MAX + 10];
-            char username[NAME_MAX + 1];
-            if (getlogin_r(username, NAME_MAX) == 0) {
-                sprintf(message, "\n%s:%d@%s> %s", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port), username, buffer);
-                for (int i = 0; i < MAX_CLIENTS; ++i) {
-                    if (clients[i].active && clients[i].sock != sock) {
-                        send(clients[i].sock, message, strlen(message), 0);
-                    }
-                }
-            } else {
-                perror("Failed to get username");
-            }
-        } else if (valread == 0) {
-            printf("Client %s:%d disconnected.\n", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
-            break;
+  struct client_info *client = (struct client_info *)arg;
+  int sock = client->sock;
+  struct sockaddr_in addr = client->address;
+  char buffer[BUFFER_SIZE];
+  int valread;
+
+  while (true) {
+    memset(buffer, 0, BUFFER_SIZE);
+    valread = read(sock, buffer, BUFFER_SIZE);
+    if (valread > 0) {
+
+      if (strcmp(buffer, "/ip") == 0) {
+        char *addr = ip();
+        if (addr != NULL) {
+          send(sock, addr, strlen(addr), 0);
+          printf("Sent IP: %s\n", addr);
         } else {
-            perror("Error reading from socket");
-            break;
+          const char *error_message = "Unable to retrieve IP address.\n";
+          send(sock, error_message, strlen(error_message), 0);
+          printf("Error: Unable to retrieve IP address.\n");
+        }
+
+      } else {
+        // Format the message with the username and address
+        char message[BUFFER_SIZE + NAME_MAX + 10];
+        char username[NAME_MAX + 1];
+        if (getlogin_r(username, NAME_MAX) == 0) {
+          sprintf(message, "\n%s:%d@%s> %s", inet_ntoa(addr.sin_addr),
+                  ntohs(addr.sin_port), username, buffer);
+          for (int i = 0; i < MAX_CLIENTS; ++i) {
+            if (clients[i].active && clients[i].sock != sock) {
+              send(clients[i].sock, message, strlen(message), 0);
+            }
+          }
+        } else {
+          perror("Failed to get username");
+        }
+      }
+    } else if (valread == 0) {
+      printf("Client %s:%d disconnected.\n", inet_ntoa(addr.sin_addr),
+             ntohs(addr.sin_port));
+      break;
+    } else {
+      perror("Error reading from socket");
+      break;
+    }
+  }
+
+  // Mark client as inactive
+  client->active = false;
+  close(sock);
+  return NULL;
+}
+
+char *ip() {
+    struct ifaddrs *ifaddr, *ifa;
+    int family, s;
+    char host[NI_MAXHOST];
+    static char ip_address[NI_MAXHOST];
+
+    if (getifaddrs(&ifaddr) == -1) {
+        return NULL;
+    }
+
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL)
+            continue;
+
+        family = ifa->ifa_addr->sa_family;
+
+        if (family == AF_INET || family == AF_INET6) {
+            s = getnameinfo(ifa->ifa_addr,
+                            (family == AF_INET) ? sizeof(struct sockaddr_in)
+                            : sizeof(struct sockaddr_in6),
+                            host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+            if (s != 0) {
+                freeifaddrs(ifaddr);
+                return NULL;
+            }
+
+            if (strcmp(ifa->ifa_name, "lo") != 0) {
+                strncpy(ip_address, host, NI_MAXHOST);
+                freeifaddrs(ifaddr);
+                return ip_address;
+            }
         }
     }
-    // Mark client as inactive
-    client->active = 0;
-    close(sock);
+
+    freeifaddrs(ifaddr);
     return NULL;
 }
 
 void send_message_to_client(int client_index, const char *message) {
     if (client_index >= 0 && client_index < MAX_CLIENTS && clients[client_index].active) {
-        if (strcmp(message, "/ip")) {
-            
-        }
         send(clients[client_index].sock, message, strlen(message), 0);
     } else {
         printf("Client index %d is not valid or inactive.\n", client_index);
     }
-}
-
-char *ip() {
-  struct ifaddrs *ifaddr, *ifa;
-  int family, s;
-  char host[NI_MAXHOST];
-  static char ip_address[NI_MAXHOST];
-
-  if (getifaddrs(&ifaddr) == -1) {
-    return NULL;
-  }
-
-  for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-    if (ifa->ifa_addr == NULL)
-      continue;
-
-    family = ifa->ifa_addr->sa_family;
-
-    if (family == AF_INET || family == AF_INET6) {
-      s = getnameinfo(ifa->ifa_addr,
-                      (family == AF_INET) ? sizeof(struct sockaddr_in)
-                                          : sizeof(struct sockaddr_in6),
-                      host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
-      if (s != 0) {
-        freeifaddrs(ifaddr);
-        return NULL;
-      }
-
-      if (strcmp(ifa->ifa_name, "lo") != 0) {
-        strncpy(ip_address, host, NI_MAXHOST);
-        freeifaddrs(ifaddr);
-        return ip_address;
-      }
-    }
-  }
-
-  freeifaddrs(ifaddr);
-  return NULL;
-}
-
-void print_public_ip() {
-    char command[BUFFER_SIZE] = "curl -s ifconfig.me";
-    FILE *fp;
-    char result[BUFFER_SIZE] = {0};
-    fp = popen(command, "r");
-    if (fp == NULL) {
-        perror("Failed to run command");
-        exit(EXIT_FAILURE);
-    }
-    if (fgets(result, sizeof(result), fp) != NULL) {
-        printf("Public IP: %s To connect, run: ./chat -c %s:%d\n", result, result, DEFAULT_PORT);
-    }
-    pclose(fp);
 }
 
 int check_server_running(int port) {
@@ -179,7 +186,6 @@ void run_server(const char *ip_address, int port) {
         close(server_fd);
         exit(EXIT_FAILURE);
     }
-    print_public_ip();
     printf("Server listening on port %d\n", port);
     server_running = 1;
     while (1) {
@@ -256,16 +262,15 @@ void run_client(char *server_ip, int port) {
 }
 
 int main(int argc, char *argv[]) {
+    /* char *ip_addr = ip(); */
+    /* printf("IP: %s\n", ip_addr); */
 
-  char *ip_addr = ip();
-  printf("IP: %s\n", ip_addr);
-
-  if (argc == 1) {
-    if (check_server_running(DEFAULT_PORT)) {
-      run_client("127.0.0.1", DEFAULT_PORT);
-    } else {
-      run_server(NULL, DEFAULT_PORT);
-    }
+    if (argc == 1) {
+        if (check_server_running(DEFAULT_PORT)) {
+            run_client("127.0.0.1", DEFAULT_PORT);
+        } else {
+            run_server(NULL, DEFAULT_PORT);
+        }
     } else if (argc == 3 && strcmp(argv[1], "-s") == 0) {
         char *ip_port = argv[2];
         char *ip_address = strtok(ip_port, ":");
